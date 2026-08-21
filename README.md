@@ -115,12 +115,12 @@ If the first search doesn't find what you need, try rephrasing or switching mode
 
 Before every agent turn, the following are injected into the system prompt (in priority order):
 
-1. **Open scratchpad items** (up to 2K chars)
-2. **Today's daily log** (up to 3K chars, tail)
-3. **MEMORY.md** (up to 4K chars, middle-truncated)
-4. **Yesterday's daily log** (up to 3K chars, tail — lowest priority, trimmed first)
+1. **Open scratchpad items** (up to `PI_MEMORY_SCRATCHPAD_MAX_CHARS`, default 2K chars)
+2. **Today's daily log** (up to `PI_MEMORY_DAILY_MAX_CHARS`, default 3K chars, tail)
+3. **MEMORY.md** (up to `PI_MEMORY_LONG_TERM_MAX_CHARS`, default 4K chars, middle-truncated)
+4. **Yesterday's daily log** (up to `PI_MEMORY_DAILY_MAX_CHARS`, default 3K chars, tail — lowest priority, trimmed first)
 
-Total injection is capped at 16K chars.
+Total injection is capped at `PI_MEMORY_MAX_CHARS` (default 16K chars). Invalid, zero, or negative values fall back to their defaults.
 
 ### KV cache-stable snapshot (default)
 
@@ -186,6 +186,10 @@ This ensures in-progress context survives compaction and is visible in the next 
 | Variable | Values | Default | Description |
 |----------|--------|---------|-------------|
 | `PI_MEMORY_DIR` | path | `~/.pi/agent/memory` | Override the memory storage directory |
+| `PI_MEMORY_LONG_TERM_MAX_CHARS` | positive integer | `4000` | Maximum characters from `MEMORY.md` included in automatic context injection |
+| `PI_MEMORY_SCRATCHPAD_MAX_CHARS` | positive integer | `2000` | Maximum characters from open scratchpad items included in automatic context injection |
+| `PI_MEMORY_DAILY_MAX_CHARS` | positive integer | `3000` | Maximum characters from each daily log included in automatic context injection |
+| `PI_MEMORY_MAX_CHARS` | positive integer | `16000` | Overall maximum characters for automatic memory context injection |
 | `PI_MEMORY_SNAPSHOT` | `stable`, `per-turn` | `stable` | `stable` snapshots memory at checkpoints for KV cache stability; `per-turn` rebuilds every turn (legacy behavior) |
 | `PI_MEMORY_QMD_UPDATE` | `background`, `manual`, `off` | `background` | Controls automatic `qmd update` + `qmd embed` after writes |
 | `PI_MEMORY_QMD_SEARCH_TIMEOUT_MS` | positive integer (milliseconds) | `60000` | Sets the timeout for explicit `memory_search` qmd queries |
@@ -194,6 +198,19 @@ This ensures in-progress context survives compaction and is visible in the next 
 | `PI_MEMORY_EXIT_SUMMARY` | `0`, `off`, `false`, `no` to disable | unset (enabled) | Disable the exit summary on real quit (Ctrl+D, `/quit`, session end). Quitting then does no LLM call and no `qmd update`, so it is instant; explicit `memory_write` during sessions is unaffected. |
 | `PI_MEMORY_EXIT_SUMMARY_MODEL` | `provider/model-id` | unset (session model) | Model used to write the exit summary, e.g. a cheaper/faster one. Unresolvable specs fall back to the session model with a warning. |
 | `PI_MEMORY_EXIT_SUMMARY_TIMEOUT_MS` | positive integer (milliseconds) | `10000` | Self-imposed timeout for exit-summary generation on quit. Pi awaits shutdown handlers with no timeout, so a hanging provider would otherwise block quitting indefinitely. On expiry nothing is persisted. |
+
+For example, to keep a larger long-term context while limiting daily logs:
+
+```bash
+export PI_MEMORY_LONG_TERM_MAX_CHARS=8000
+export PI_MEMORY_SCRATCHPAD_MAX_CHARS=2000
+export PI_MEMORY_DAILY_MAX_CHARS=1000
+export PI_MEMORY_MAX_CHARS=12000
+```
+
+These variables affect automatic context injection only; they do not truncate or modify files on disk, and they do not limit explicit `memory_read` or `memory_search` results.
+
+After a non-empty exit summary has been successfully appended to the daily log, pi-memory creates `.exit_memory_write_succeeded` inside `PI_MEMORY_DIR`. The marker contains a human-readable timestamp and its file modification time records the success time. It is removed at the next `session_start`, so its presence indicates success for the current session. `memory_status` reports the marker state as well.
 
 ## Troubleshooting
 

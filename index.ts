@@ -148,15 +148,45 @@ export function dailyPath(date: string): string {
 const RESPONSE_PREVIEW_MAX_CHARS = 4_000;
 const RESPONSE_PREVIEW_MAX_LINES = 120;
 
-const CONTEXT_LONG_TERM_MAX_CHARS = 4_000;
+const DEFAULT_CONTEXT_LONG_TERM_MAX_CHARS = 4_000;
 const CONTEXT_LONG_TERM_MAX_LINES = 150;
-const CONTEXT_SCRATCHPAD_MAX_CHARS = 2_000;
+const DEFAULT_CONTEXT_SCRATCHPAD_MAX_CHARS = 2_000;
 const CONTEXT_SCRATCHPAD_MAX_LINES = 120;
-const CONTEXT_DAILY_MAX_CHARS = 3_000;
+const DEFAULT_CONTEXT_DAILY_MAX_CHARS = 3_000;
 const CONTEXT_DAILY_MAX_LINES = 120;
 const CONTEXT_SEARCH_MAX_CHARS = 2_500;
 const CONTEXT_SEARCH_MAX_LINES = 80;
-const CONTEXT_MAX_CHARS = 16_000;
+const DEFAULT_CONTEXT_MAX_CHARS = 16_000;
+
+export interface MemoryContextLimits {
+	longTermMaxChars: number;
+	scratchpadMaxChars: number;
+	dailyMaxChars: number;
+	maxChars: number;
+}
+
+function positiveIntegerEnv(env: NodeJS.ProcessEnv, name: string, fallback: number): number {
+	const value = Number(env[name]);
+	return Number.isInteger(value) && value > 0 ? value : fallback;
+}
+
+/**
+ * Character limits for automatic context injection. Values are read at call
+ * time so changing the environment before starting/reloading pi takes effect.
+ * Invalid, zero, and negative values fall back to the defaults.
+ */
+export function getMemoryContextLimits(env: NodeJS.ProcessEnv = process.env): MemoryContextLimits {
+	return {
+		longTermMaxChars: positiveIntegerEnv(env, "PI_MEMORY_LONG_TERM_MAX_CHARS", DEFAULT_CONTEXT_LONG_TERM_MAX_CHARS),
+		scratchpadMaxChars: positiveIntegerEnv(
+			env,
+			"PI_MEMORY_SCRATCHPAD_MAX_CHARS",
+			DEFAULT_CONTEXT_SCRATCHPAD_MAX_CHARS,
+		),
+		dailyMaxChars: positiveIntegerEnv(env, "PI_MEMORY_DAILY_MAX_CHARS", DEFAULT_CONTEXT_DAILY_MAX_CHARS),
+		maxChars: positiveIntegerEnv(env, "PI_MEMORY_MAX_CHARS", DEFAULT_CONTEXT_MAX_CHARS),
+	};
+}
 
 const EXIT_SUMMARY_MAX_CHARS = 80_000;
 const EXIT_SUMMARY_MIN_MESSAGES = 4;
@@ -526,6 +556,38 @@ export function isExitSummaryEmpty(summary: string): boolean {
 
 const DEFAULT_EXIT_SUMMARY_TIMEOUT_MS = 10_000;
 
+function exitMemoryWriteSuccessPath(): string {
+	return path.join(MEMORY_DIR, ".exit_memory_write_succeeded");
+}
+
+/** Remove the previous session's marker so its presence represents this run. */
+export function clearExitMemoryWriteSuccessMarker(): void {
+	try {
+		fs.rmSync(exitMemoryWriteSuccessPath(), { force: true });
+	} catch {
+		// A marker is diagnostic only; never make session startup fail because of it.
+	}
+}
+
+/** Return the marker mtime, or null when this session has not written a summary. */
+export function getExitMemoryWriteSuccessTimestamp(): Date | null {
+	try {
+		const stats = fs.statSync(exitMemoryWriteSuccessPath());
+		return stats.isFile() ? stats.mtime : null;
+	} catch {
+		return null;
+	}
+}
+
+/** Mark a successfully persisted exit summary without affecting qmd or memory files. */
+function markExitMemoryWriteSucceeded(): void {
+	try {
+		fs.writeFileSync(exitMemoryWriteSuccessPath(), `Exit memory write succeeded at ${nowTimestamp()}\n`, "utf-8");
+	} catch {
+		// Diagnostic marker failure must not turn a successful memory write into an error.
+	}
+}
+
 /**
  * Self-imposed timeout for the exit-summary work on session_shutdown. Pi core
  * awaits shutdown handlers with no timeout, and generateExitSummary() is only
@@ -779,6 +841,7 @@ function readRecoveryRecord(recoveryId: string): { record: RecoveryRecord; fileP
 
 export function buildMemoryContext(searchResults?: string): string {
 	ensureDirs();
+	const limits = getMemoryContextLimits();
 	// Priority order: scratchpad > today's daily > search results > MEMORY.md > yesterday's daily
 	const sections: string[] = [];
 
@@ -792,7 +855,7 @@ export function buildMemoryContext(searchResults?: string): string {
 				serialized,
 				"start",
 				CONTEXT_SCRATCHPAD_MAX_LINES,
-				CONTEXT_SCRATCHPAD_MAX_CHARS,
+				limits.scratchpadMaxChars,
 			);
 			if (section) sections.push(section);
 		}
@@ -808,7 +871,7 @@ export function buildMemoryContext(searchResults?: string): string {
 			todayContent,
 			"end",
 			CONTEXT_DAILY_MAX_LINES,
-			CONTEXT_DAILY_MAX_CHARS,
+			limits.dailyMaxChars,
 		);
 		if (section) sections.push(section);
 	}
@@ -831,7 +894,7 @@ export function buildMemoryContext(searchResults?: string): string {
 			longTerm,
 			"middle",
 			CONTEXT_LONG_TERM_MAX_LINES,
-			CONTEXT_LONG_TERM_MAX_CHARS,
+			limits.longTermMaxChars,
 		);
 		if (section) sections.push(section);
 	}
@@ -843,7 +906,7 @@ export function buildMemoryContext(searchResults?: string): string {
 			yesterdayContent,
 			"end",
 			CONTEXT_DAILY_MAX_LINES,
-			CONTEXT_DAILY_MAX_CHARS,
+			limits.dailyMaxChars,
 		);
 		if (section) sections.push(section);
 	}
@@ -853,10 +916,10 @@ export function buildMemoryContext(searchResults?: string): string {
 	}
 
 	const context = `# Memory\n\n${sections.join("\n\n---\n\n")}`;
-	if (context.length > CONTEXT_MAX_CHARS) {
+	if (context.length > limits.maxChars) {
 		const result = buildPreview(context, {
 			maxLines: Number.POSITIVE_INFINITY,
-			maxChars: CONTEXT_MAX_CHARS,
+			maxChars: limits.maxChars,
 			mode: "start",
 		});
 		const note = result.truncated
@@ -1426,6 +1489,7 @@ export function _resetMemorySnapshot() {
 export default function (pi: ExtensionAPI) {
 	// --- session_start: detect qmd, auto-setup collection ---
 	pi.on("session_start", async (_event, ctx) => {
+		clearExitMemoryWriteSuccessMarker();
 		exitSummaryReason = null;
 		if (terminalInputUnsubscribe) {
 			terminalInputUnsubscribe();
@@ -1515,6 +1579,7 @@ export default function (pi: ExtensionAPI) {
 					const existing = readFileSafe(filePath) ?? "";
 					const separator = existing.trim() ? "\n\n" : "";
 					fs.writeFileSync(filePath, existing + separator + entry, "utf-8");
+					markExitMemoryWriteSucceeded();
 					await ensureQmdAvailableForUpdate();
 					await runQmdUpdateNow();
 				}
@@ -2403,9 +2468,16 @@ export default function (pi: ExtensionAPI) {
 				lines.push("", qmdInstallInstructions());
 			}
 
+			const contextLimits = getMemoryContextLimits();
+			const exitMemoryWriteSucceededAt = getExitMemoryWriteSuccessTimestamp();
 			lines.push(
 				"",
 				"## Configuration",
+				`- Exit memory write: ${exitMemoryWriteSucceededAt ? `succeeded at ${exitMemoryWriteSucceededAt.toISOString()}` : "not recorded this session"}`,
+				`- PI_MEMORY_LONG_TERM_MAX_CHARS: ${contextLimits.longTermMaxChars}`,
+				`- PI_MEMORY_SCRATCHPAD_MAX_CHARS: ${contextLimits.scratchpadMaxChars}`,
+				`- PI_MEMORY_DAILY_MAX_CHARS: ${contextLimits.dailyMaxChars}`,
+				`- PI_MEMORY_MAX_CHARS: ${contextLimits.maxChars}`,
 				`- PI_MEMORY_SNAPSHOT: ${getSnapshotMode()}`,
 				`- PI_MEMORY_QMD_UPDATE: ${getQmdUpdateMode()}`,
 				`- PI_MEMORY_QMD_SEARCH_TIMEOUT_MS: ${getQmdSearchTimeoutMs()}`,
@@ -2424,6 +2496,7 @@ export default function (pi: ExtensionAPI) {
 					embeddings,
 					snapshotMode: getSnapshotMode(),
 					qmdUpdateMode: getQmdUpdateMode(),
+					contextLimits,
 				},
 			};
 		},

@@ -27,11 +27,14 @@ import {
 	buildQmdEnv,
 	buildQmdSpawn,
 	clampSearchLimit,
+	clearExitMemoryWriteSuccessMarker,
 	dailyPath,
 	ensureDirs,
 	ensureQmdEmbed,
 	forgetBlocks,
+	getExitMemoryWriteSuccessTimestamp,
 	getExitSummaryTimeoutMs,
+	getMemoryContextLimits,
 	getQmdSearchTimeoutMs,
 	isExitSummaryEmpty,
 	isExitSummaryEnabled,
@@ -548,6 +551,68 @@ describe("serializeScratchpad", () => {
 // 3. buildMemoryContext
 // ==========================================================================
 
+describe("getMemoryContextLimits", () => {
+	test("returns the documented defaults", () => {
+		expect(getMemoryContextLimits({} as NodeJS.ProcessEnv)).toEqual({
+			longTermMaxChars: 4_000,
+			scratchpadMaxChars: 2_000,
+			dailyMaxChars: 3_000,
+			maxChars: 16_000,
+		});
+	});
+
+	test("reads positive integer overrides", () => {
+		const env = {
+			PI_MEMORY_LONG_TERM_MAX_CHARS: "8000",
+			PI_MEMORY_SCRATCHPAD_MAX_CHARS: "2000",
+			PI_MEMORY_DAILY_MAX_CHARS: "1000",
+			PI_MEMORY_MAX_CHARS: "12000",
+		} as NodeJS.ProcessEnv;
+
+		expect(getMemoryContextLimits(env)).toEqual({
+			longTermMaxChars: 8_000,
+			scratchpadMaxChars: 2_000,
+			dailyMaxChars: 1_000,
+			maxChars: 12_000,
+		});
+	});
+
+	test("falls back for invalid, zero, negative, or fractional values", () => {
+		const env = {
+			PI_MEMORY_LONG_TERM_MAX_CHARS: "nope",
+			PI_MEMORY_SCRATCHPAD_MAX_CHARS: "0",
+			PI_MEMORY_DAILY_MAX_CHARS: "-1",
+			PI_MEMORY_MAX_CHARS: "1.5",
+		} as NodeJS.ProcessEnv;
+
+		expect(getMemoryContextLimits(env)).toEqual({
+			longTermMaxChars: 4_000,
+			scratchpadMaxChars: 2_000,
+			dailyMaxChars: 3_000,
+			maxChars: 16_000,
+		});
+	});
+});
+
+describe("exit memory write marker", () => {
+	beforeEach(setupTmpDir);
+	afterEach(cleanupTmpDir);
+
+	test("reports and clears the marker timestamp", () => {
+		ensureDirs();
+		const marker = path.join(tmpDir, ".exit_memory_write_succeeded");
+		expect(getExitMemoryWriteSuccessTimestamp()).toBeNull();
+
+		fs.writeFileSync(marker, "Exit memory write succeeded at 2026-08-21 12:00:00\\n", "utf-8");
+		const timestamp = getExitMemoryWriteSuccessTimestamp();
+		expect(timestamp).toBeInstanceOf(Date);
+		expect(timestamp?.getTime()).toBeGreaterThan(0);
+
+		clearExitMemoryWriteSuccessMarker();
+		expect(getExitMemoryWriteSuccessTimestamp()).toBeNull();
+	});
+});
+
 describe("buildMemoryContext", () => {
 	beforeEach(setupTmpDir);
 	afterEach(cleanupTmpDir);
@@ -619,6 +684,40 @@ describe("buildMemoryContext", () => {
 		ensureDirs();
 		fs.writeFileSync(path.join(tmpDir, "MEMORY.md"), "   \n\n  ", "utf-8");
 		expect(buildMemoryContext()).toBe("");
+	});
+
+	test("uses environment overrides for each automatic context section", () => {
+		const names = [
+			"PI_MEMORY_LONG_TERM_MAX_CHARS",
+			"PI_MEMORY_SCRATCHPAD_MAX_CHARS",
+			"PI_MEMORY_DAILY_MAX_CHARS",
+			"PI_MEMORY_MAX_CHARS",
+		] as const;
+		const previous = Object.fromEntries(names.map((name) => [name, process.env[name]]));
+		try {
+			process.env.PI_MEMORY_LONG_TERM_MAX_CHARS = "101";
+			process.env.PI_MEMORY_SCRATCHPAD_MAX_CHARS = "102";
+			process.env.PI_MEMORY_DAILY_MAX_CHARS = "103";
+			process.env.PI_MEMORY_MAX_CHARS = "16000";
+			ensureDirs();
+			fs.writeFileSync(path.join(tmpDir, "MEMORY.md"), "L".repeat(500), "utf-8");
+			fs.writeFileSync(path.join(tmpDir, "SCRATCHPAD.md"), `# Scratchpad\n\n- [ ] ${"S".repeat(500)}`, "utf-8");
+			fs.writeFileSync(path.join(tmpDir, "daily", `${todayStr()}.md`), "D".repeat(500), "utf-8");
+
+			const ctx = buildMemoryContext();
+			expect(ctx).toContain("101/500 chars");
+			expect(ctx).toContain("102/");
+			expect(ctx).toContain("103/500 chars");
+
+			process.env.PI_MEMORY_MAX_CHARS = "300";
+			expect(buildMemoryContext()).toContain("[truncated overall context:");
+		} finally {
+			for (const name of names) {
+				const value = previous[name];
+				if (value === undefined) delete process.env[name];
+				else process.env[name] = value;
+			}
+		}
 	});
 });
 
