@@ -99,7 +99,7 @@ When `PI_MEMORY_DIR` is unset, use the default directory:
 These changes currently exist in the local clone at:
 
 ```text
-/home/ojr/.pi/agent/git/github.com/jaromrax/pi-memory
+$HOME/.pi/agent/git/github.com/jaromrax/pi-memory
 ```
 
 Commit and push the changes to the GitHub fork if they should survive a future Pi package reinstall or update. Keep using npm for dependency installation in this project; Bun is used by the existing test script and does not replace npm.
