@@ -165,26 +165,31 @@ export interface MemoryContextLimits {
 	maxChars: number;
 }
 
-function positiveIntegerEnv(env: NodeJS.ProcessEnv, name: string, fallback: number): number {
+function nonNegativeIntegerEnv(env: NodeJS.ProcessEnv, name: string, fallback: number): number {
 	const value = Number(env[name]);
-	return Number.isInteger(value) && value > 0 ? value : fallback;
+	return Number.isInteger(value) && value >= 0 ? value : fallback;
 }
 
 /**
  * Character limits for automatic context injection. Values are read at call
  * time so changing the environment before starting/reloading pi takes effect.
- * Invalid, zero, and negative values fall back to the defaults.
+ * Zero disables the corresponding section (or all automatic context for the
+ * overall limit); invalid, negative, and fractional values use the defaults.
  */
 export function getMemoryContextLimits(env: NodeJS.ProcessEnv = process.env): MemoryContextLimits {
 	return {
-		longTermMaxChars: positiveIntegerEnv(env, "PI_MEMORY_LONG_TERM_MAX_CHARS", DEFAULT_CONTEXT_LONG_TERM_MAX_CHARS),
-		scratchpadMaxChars: positiveIntegerEnv(
+		longTermMaxChars: nonNegativeIntegerEnv(
+			env,
+			"PI_MEMORY_LONG_TERM_MAX_CHARS",
+			DEFAULT_CONTEXT_LONG_TERM_MAX_CHARS,
+		),
+		scratchpadMaxChars: nonNegativeIntegerEnv(
 			env,
 			"PI_MEMORY_SCRATCHPAD_MAX_CHARS",
 			DEFAULT_CONTEXT_SCRATCHPAD_MAX_CHARS,
 		),
-		dailyMaxChars: positiveIntegerEnv(env, "PI_MEMORY_DAILY_MAX_CHARS", DEFAULT_CONTEXT_DAILY_MAX_CHARS),
-		maxChars: positiveIntegerEnv(env, "PI_MEMORY_MAX_CHARS", DEFAULT_CONTEXT_MAX_CHARS),
+		dailyMaxChars: nonNegativeIntegerEnv(env, "PI_MEMORY_DAILY_MAX_CHARS", DEFAULT_CONTEXT_DAILY_MAX_CHARS),
+		maxChars: nonNegativeIntegerEnv(env, "PI_MEMORY_MAX_CHARS", DEFAULT_CONTEXT_MAX_CHARS),
 	};
 }
 
@@ -315,6 +320,7 @@ function formatPreviewBlock(label: string, content: string, mode: TruncateMode) 
 }
 
 function formatContextSection(label: string, content: string, mode: TruncateMode, maxLines: number, maxChars: number) {
+	if (maxChars === 0) return "";
 	const result = buildPreview(content, { maxLines, maxChars, mode });
 	if (!result.preview) {
 		return "";
@@ -842,6 +848,7 @@ function readRecoveryRecord(recoveryId: string): { record: RecoveryRecord; fileP
 export function buildMemoryContext(searchResults?: string): string {
 	ensureDirs();
 	const limits = getMemoryContextLimits();
+	if (limits.maxChars === 0) return "";
 	// Priority order: scratchpad > today's daily > search results > MEMORY.md > yesterday's daily
 	const sections: string[] = [];
 

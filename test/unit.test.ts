@@ -577,20 +577,24 @@ describe("getMemoryContextLimits", () => {
 		});
 	});
 
-	test("falls back for invalid, zero, negative, or fractional values", () => {
+	test("accepts zero to disable a context section, but falls back for invalid values", () => {
 		const env = {
-			PI_MEMORY_LONG_TERM_MAX_CHARS: "nope",
+			PI_MEMORY_LONG_TERM_MAX_CHARS: "0",
 			PI_MEMORY_SCRATCHPAD_MAX_CHARS: "0",
-			PI_MEMORY_DAILY_MAX_CHARS: "-1",
-			PI_MEMORY_MAX_CHARS: "1.5",
+			PI_MEMORY_DAILY_MAX_CHARS: "0",
+			PI_MEMORY_MAX_CHARS: "0",
 		} as NodeJS.ProcessEnv;
 
 		expect(getMemoryContextLimits(env)).toEqual({
-			longTermMaxChars: 4_000,
-			scratchpadMaxChars: 2_000,
-			dailyMaxChars: 3_000,
-			maxChars: 16_000,
+			longTermMaxChars: 0,
+			scratchpadMaxChars: 0,
+			dailyMaxChars: 0,
+			maxChars: 0,
 		});
+
+		expect(getMemoryContextLimits({ PI_MEMORY_DAILY_MAX_CHARS: "-1" } as NodeJS.ProcessEnv).dailyMaxChars).toBe(
+			3_000,
+		);
 	});
 });
 
@@ -684,6 +688,37 @@ describe("buildMemoryContext", () => {
 		ensureDirs();
 		fs.writeFileSync(path.join(tmpDir, "MEMORY.md"), "   \n\n  ", "utf-8");
 		expect(buildMemoryContext()).toBe("");
+	});
+
+	test("zero disables long-term and daily context while retaining scratchpad", () => {
+		const names = [
+			"PI_MEMORY_LONG_TERM_MAX_CHARS",
+			"PI_MEMORY_SCRATCHPAD_MAX_CHARS",
+			"PI_MEMORY_DAILY_MAX_CHARS",
+			"PI_MEMORY_MAX_CHARS",
+		] as const;
+		const previous = Object.fromEntries(names.map((name) => [name, process.env[name]]));
+		try {
+			process.env.PI_MEMORY_LONG_TERM_MAX_CHARS = "0";
+			process.env.PI_MEMORY_SCRATCHPAD_MAX_CHARS = "1000";
+			process.env.PI_MEMORY_DAILY_MAX_CHARS = "0";
+			process.env.PI_MEMORY_MAX_CHARS = "1000";
+			ensureDirs();
+			fs.writeFileSync(path.join(tmpDir, "MEMORY.md"), "LONG_TERM_SECRET", "utf-8");
+			fs.writeFileSync(path.join(tmpDir, "SCRATCHPAD.md"), "- [ ] Keep this", "utf-8");
+			fs.writeFileSync(path.join(tmpDir, "daily", `${todayStr()}.md`), "DAILY_SECRET", "utf-8");
+
+			const ctx = buildMemoryContext();
+			expect(ctx).toContain("Keep this");
+			expect(ctx).not.toContain("LONG_TERM_SECRET");
+			expect(ctx).not.toContain("DAILY_SECRET");
+		} finally {
+			for (const name of names) {
+				const value = previous[name];
+				if (value === undefined) delete process.env[name];
+				else process.env[name] = value;
+			}
+		}
 	});
 
 	test("uses environment overrides for each automatic context section", () => {

@@ -27,11 +27,17 @@ Variables and defaults:
 Implementation details:
 
 - Limits are read at context-build time, so they can be configured through the environment before starting or reloading Pi.
-- Invalid, fractional, zero, negative, or non-finite values fall back to the corresponding default.
+- Invalid, fractional, negative, or non-finite values fall back to the corresponding default; zero disables the corresponding automatic context section (and zero overall disables automatic context).
 - Existing line limits and truncation modes are preserved.
 - The settings affect automatic injection only; memory files on disk are not modified.
 - Explicit `memory_read` and `memory_search` behavior is unchanged.
 - `memory_status` reports the active effective values.
+
+## 2026-09-03
+
+### Zero-valued injection limits disable sections
+
+Fixed zero-valued context limits so `MEMORY.md` and daily logs can be kept on-demand while the scratchpad remains automatically injected. Added regression coverage and documented the behavior.
 
 ### Exit-summary success marker
 
