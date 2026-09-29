@@ -186,7 +186,7 @@ This ensures in-progress context survives compaction and is visible in the next 
 
 | Variable | Values | Default | Description |
 |----------|--------|---------|-------------|
-| `PI_MEMORY_DIR` | path | `~/.pi/agent/memory` | Override the memory storage directory |
+| `PI_MEMORY_DIR` | path | `~/.pi/agent/memory` | Override the memory storage directory (see [Per-project memory](#per-project-memory)) |
 | `PI_MEMORY_LONG_TERM_MAX_CHARS` | non-negative integer | `4000` | Maximum characters from `MEMORY.md`; `0` disables automatic long-term injection |
 | `PI_MEMORY_SCRATCHPAD_MAX_CHARS` | non-negative integer | `2000` | Maximum characters from open scratchpad items; `0` disables automatic scratchpad injection |
 | `PI_MEMORY_DAILY_MAX_CHARS` | non-negative integer | `3000` | Maximum characters from each daily log; `0` disables automatic daily injection |
@@ -211,6 +211,33 @@ export PI_MEMORY_MAX_CHARS=12000
 
 These variables affect automatic context injection only; they do not truncate or modify files on disk, and they do not limit explicit `memory_read` or `memory_search` results.
 
+## Per-project memory
+
+Set `PI_MEMORY_DIR` to give each project its own memory instead of the shared
+`~/.pi/agent/memory` store. The directory is created on demand:
+
+```bash
+export PI_MEMORY_DIR="$PWD/.pi-memory"
+pi
+```
+
+Everything follows the directory: `MEMORY.md`, `SCRATCHPAD.md`, `daily/`, and the
+exit-summary marker. Add `.pi-memory/` to the project's `.gitignore` if the
+memory should stay local.
+
+`memory_search` stays isolated too: qmd collection names are derived from the
+memory directory. The default home directory keeps the historical collection
+name `pi-memory`; any other directory gets `pi-memory-<hash>`, so searches never
+return another project's memory. Embed each new directory once (or let the
+extension auto-create the collection on the first `memory_search`):
+
+```bash
+qmd collection add "$PWD/.pi-memory" --name "pi-memory-$(node -e 'const{createHash}=require("crypto");console.log(createHash("sha256").update(require("path").resolve(process.argv[1])).digest("hex").slice(0,8))' "$PWD/.pi-memory")"
+qmd embed
+```
+
+`memory_status` prints the resolved directory and the active collection name.
+
 After a non-empty exit summary has been successfully appended to the daily log, pi-memory creates `.exit_memory_write_succeeded` inside `PI_MEMORY_DIR`. The marker contains a human-readable timestamp and its file modification time records the success time. It is removed at the next `session_start`, so its presence indicates success for the current session. `memory_status` reports the marker state as well.
 
 ## Troubleshooting
@@ -223,6 +250,7 @@ Run the `memory_status` tool first — it reports most of these at a glance.
 | Search returns nothing for terms you know exist | Index is stale | A background `qmd update` runs after writes; if disabled (`PI_MEMORY_QMD_UPDATE=off`), run `qmd update` manually |
 | “need embeddings” on semantic/deep search | Vectors not built yet | Embedding starts automatically in the background — retry shortly. If `PI_MEMORY_QMD_UPDATE` is `manual`/`off`, run `qmd embed` yourself |
 | Collection `pi-memory` missing | Auto-setup didn't run (qmd installed mid-session) | Run any `memory_search` (auto-creates it) or `qmd collection add ~/.pi/agent/memory --name pi-memory` |
+| Search returns another project's notes | Collection name not migrated after setting `PI_MEMORY_DIR` | Run `qmd collection add "$PI_MEMORY_DIR" --name "pi-memory-<hash>"` (hash from `memory_status`) and `qmd embed` |
 | qmd works in the shell but not from pi on Windows | Broken `.cmd`/`.ps1` shims | The extension bypasses them by invoking qmd's JS entry with `node`; make sure the npm global `node_modules` dir is on `PATH` |
 | Memory isn't being injected after a write | Cache-stable snapshot only refreshes at checkpoints | Long-term writes refresh next turn; for daily/scratchpad use `memory_read`, or set `PI_MEMORY_SNAPSHOT=per-turn` |
 

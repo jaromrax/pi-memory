@@ -41,6 +41,7 @@ import {
 	nowTimestamp,
 	parseScratchpad,
 	qmdCollectionInstructions,
+	qmdCollectionName,
 	qmdInstallInstructions,
 	readFileSafe,
 	resolveMemoryDir,
@@ -769,6 +770,33 @@ describe("qmdInstallInstructions", () => {
 		const instructions = qmdInstallInstructions();
 		expect(instructions).toContain("qmd collection add");
 		expect(instructions).toContain("qmd embed");
+	});
+});
+
+describe("qmdCollectionName", () => {
+	test("keeps the legacy name for the default home memory dir", () => {
+		expect(qmdCollectionName(resolveMemoryDir({}))).toBe("pi-memory");
+	});
+
+	test("derives a distinct stable name for a custom memory dir", () => {
+		const a = qmdCollectionName(path.join("projects", "alpha", ".pi-memory"));
+		const b = qmdCollectionName(path.join("projects", "beta", ".pi-memory"));
+
+		expect(a).toMatch(/^pi-memory-[0-9a-f]{8}$/);
+		expect(a).not.toBe(b);
+		expect(a).toBe(qmdCollectionName(path.join("projects", "alpha", ".pi-memory")));
+	});
+
+	test("uses the custom name and dir in collection instructions", () => {
+		const dir = path.join("projects", "alpha", ".pi-memory");
+		_setBaseDir(dir);
+		try {
+			const instructions = qmdCollectionInstructions();
+			expect(instructions).toContain(`--name ${qmdCollectionName()}`);
+			expect(instructions).toContain(`qmd collection add ${dir} `);
+		} finally {
+			_resetBaseDir();
+		}
 	});
 });
 

@@ -24,7 +24,7 @@
  */
 
 import { type ExecFileOptions, execFile } from "node:child_process";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { type Message, StringEnum, Type } from "@earendil-works/pi-ai";
@@ -1079,6 +1079,22 @@ export function _clearQmdStatusCaches() {
 	qmdCollectionStatusCache.clear();
 }
 
+/**
+ * qmd collection name for a memory directory.
+ *
+ * The default home dir keeps the historical `pi-memory` name so existing
+ * collections stay valid. A custom PI_MEMORY_DIR (e.g. per-project) gets a
+ * distinct, stable name so `qmd search -c` never returns another project's
+ * memory.
+ */
+export function qmdCollectionName(memoryDir: string = MEMORY_DIR): string {
+	// resolveMemoryDir({}) ignores PI_MEMORY_DIR and yields the historical default.
+	const defaultDir = resolveMemoryDir({});
+	if (path.resolve(memoryDir) === path.resolve(defaultDir)) return "pi-memory";
+	const hash = createHash("sha256").update(path.resolve(memoryDir)).digest("hex").slice(0, 8);
+	return `pi-memory-${hash}`;
+}
+
 const QMD_REPO_URL = "https://github.com/tobi/qmd";
 
 export function qmdInstallInstructions(): string {
@@ -1091,26 +1107,28 @@ export function qmdInstallInstructions(): string {
 		"",
 		"The extension auto-creates the collection on next session start.",
 		"To set it up manually instead:",
-		`  qmd collection add ${MEMORY_DIR} --name pi-memory`,
+		`  qmd collection add ${MEMORY_DIR} --name ${qmdCollectionName()}`,
 		"  qmd embed",
 	].join("\n");
 }
 
 export function qmdCollectionInstructions(): string {
+	const name = qmdCollectionName();
 	return [
-		"qmd collection pi-memory is not configured.",
+		`qmd collection ${name} is not configured.`,
 		"",
 		"Set up the collection (one-time):",
-		`  qmd collection add ${MEMORY_DIR} --name pi-memory`,
+		`  qmd collection add ${MEMORY_DIR} --name ${name}`,
 		"  qmd embed",
 	].join("\n");
 }
 
-/** Auto-create the pi-memory collection and path contexts in qmd. */
+/** Auto-create the memory collection and path contexts in qmd. */
 export async function setupQmdCollection(): Promise<boolean> {
+	const name = qmdCollectionName();
 	try {
 		await new Promise<void>((resolve, reject) => {
-			execFileFn("qmd", ["collection", "add", MEMORY_DIR, "--name", "pi-memory"], { timeout: 10_000 }, (err) =>
+			execFileFn("qmd", ["collection", "add", MEMORY_DIR, "--name", name], { timeout: 10_000 }, (err) =>
 				err ? reject(err) : resolve(),
 			);
 		});
@@ -1127,7 +1145,7 @@ export async function setupQmdCollection(): Promise<boolean> {
 	for (const [ctxPath, desc] of contexts) {
 		try {
 			await new Promise<void>((resolve, reject) => {
-				execFileFn("qmd", ["context", "add", ctxPath, desc, "-c", "pi-memory"], { timeout: 10_000 }, (err) =>
+				execFileFn("qmd", ["context", "add", ctxPath, desc, "-c", name], { timeout: 10_000 }, (err) =>
 					err ? reject(err) : resolve(),
 				);
 			});
@@ -1135,9 +1153,9 @@ export async function setupQmdCollection(): Promise<boolean> {
 			// Ignore — context may already exist
 		}
 	}
-	// Seed the cache so checkCollection("pi-memory") doesn't redundantly re-run
+	// Seed the cache so checkCollection() doesn't redundantly re-run
 	// setupQmdCollection during the short negative-cache window.
-	qmdCollectionStatusCache.set("pi-memory", { checkedAt: Date.now(), exists: true });
+	qmdCollectionStatusCache.set(name, { checkedAt: Date.now(), exists: true });
 	return true;
 }
 
@@ -1273,7 +1291,7 @@ export async function searchRelevantMemories(prompt: string): Promise<string> {
 
 	let timer: ReturnType<typeof setTimeout> | undefined;
 	try {
-		const hasCollection = await checkCollection("pi-memory");
+		const hasCollection = await checkCollection(qmdCollectionName());
 		if (!hasCollection) return "";
 
 		const results = await Promise.race([
@@ -1364,7 +1382,7 @@ export function runQmdSearch(
 	limit: number,
 ): Promise<{ results: QmdSearchResult[]; stderr: string }> {
 	const subcommand = mode === "keyword" ? "search" : mode === "semantic" ? "vsearch" : "query";
-	const args = [subcommand, "--json", "-c", "pi-memory", "-n", String(limit), query];
+	const args = [subcommand, "--json", "-c", qmdCollectionName(), "-n", String(limit), query];
 	const timeoutMs = getQmdSearchTimeoutMs();
 
 	return new Promise((resolve, reject) => {
@@ -1521,7 +1539,7 @@ export default function (pi: ExtensionAPI) {
 			return;
 		}
 
-		const hasCollection = await checkCollection("pi-memory");
+		const hasCollection = await checkCollection(qmdCollectionName());
 		if (!hasCollection) {
 			await setupQmdCollection();
 		}
@@ -2325,7 +2343,7 @@ export default function (pi: ExtensionAPI) {
 				};
 			}
 
-			let hasCollection = await checkCollection("pi-memory");
+			let hasCollection = await checkCollection(qmdCollectionName());
 			if (!hasCollection) {
 				const created = await setupQmdCollection();
 				if (created) {
@@ -2337,7 +2355,7 @@ export default function (pi: ExtensionAPI) {
 					content: [
 						{
 							type: "text",
-							text: "Could not set up qmd pi-memory collection. Check that qmd is working and the memory directory exists.",
+							text: `Could not set up qmd ${qmdCollectionName()} collection. Check that qmd is working and the memory directory exists.`,
 						},
 					],
 					isError: true,
@@ -2425,7 +2443,7 @@ export default function (pi: ExtensionAPI) {
 		label: "Memory Status",
 		description:
 			"Report the health of the memory system: where files live, what's stored, " +
-			"whether qmd search is available, whether the pi-memory collection exists, " +
+			"whether qmd search is available, whether the memory qmd collection exists, " +
 			"whether embeddings are ready, and the active configuration. " +
 			"Use this when search behaves unexpectedly or to confirm setup.",
 		parameters: Type.Object({}),
@@ -2437,7 +2455,7 @@ export default function (pi: ExtensionAPI) {
 			let collectionOk = false;
 			let embeddings: "ready" | "missing" | "unknown" | "n/a" = "n/a";
 			if (qmdOk) {
-				collectionOk = await checkCollection("pi-memory");
+				collectionOk = await checkCollection(qmdCollectionName());
 				embeddings = collectionOk ? await probeEmbeddings() : "n/a";
 			}
 
@@ -2455,7 +2473,7 @@ export default function (pi: ExtensionAPI) {
 			];
 
 			if (qmdOk) {
-				lines.push(`- Collection \`pi-memory\`: ${mark(collectionOk)}`);
+				lines.push(`- Collection \`${qmdCollectionName()}\`: ${mark(collectionOk)}`);
 				if (collectionOk) {
 					const embMark = embeddings === "ready" ? "✓" : embeddings === "missing" ? "⚠" : "?";
 					lines.push(`- Embeddings (semantic/deep): ${embMark} ${embeddings}`);
